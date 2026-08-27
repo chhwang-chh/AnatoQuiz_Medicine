@@ -625,7 +625,7 @@
 
       <div id="choice-eligibility-note" class="rules-box hidden"></div>
 
-      <button id="btn-choice-exam" style="margin-top:10px;">開始／繼續作答本場小考</button>
+      <button id="btn-choice-exam" style="margin-top:10px;">進入考試</button>
       <button id="btn-choice-scores" class="secondary" style="margin-top:12px;">查看我的歷次成績</button>
       <button id="btn-choice-review" class="secondary" style="margin-top:12px;">查看今日錯題解析（僅當天 18:00～18:10 開放）</button>
     </div>
@@ -895,7 +895,7 @@
   // https://script.google.com/macros/s/AKfycbxxxxxxxxxxxxxxxxxxxx/exec
   // ============================================================
   const API_URL = 'https://script.google.com/macros/s/AKfycby4ED6Mp2LxYZIz4mHuG2qSH5GN5cFTJnMnd_KRTlRCygawjj2KxTh-VWAL15H3DMHX/exec';
-  const FRONTEND_VERSION = 'v15 (2026-08-25)';
+  const FRONTEND_VERSION = 'v17 (2026-08-27)';
   document.addEventListener('DOMContentLoaded', function () {
     const versionEl = document.getElementById('version-display');
     if (versionEl) versionEl.textContent = FRONTEND_VERSION;
@@ -907,7 +907,20 @@
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ action: action, payload: payload || {} })
     })
-    .then(function (response) { return response.json(); })
+    .then(function (response) {
+      return response.text().then(function (text) {
+        try {
+          return JSON.parse(text);
+        } catch (parseErr) {
+          // 後端沒有回傳預期的 JSON（通常是 Google 那邊逾時或暫時性錯誤，回傳了一整頁 HTML）。
+          // 這種情況重試一次經常就能解決，所以錯誤訊息裡也提醒使用者可以再試一次。
+          return {
+            success: false,
+            error: '伺服器暫時沒有正確回應（可能是連線逾時或忙線），請稍後再試一次。若持續發生，請聯絡老師檢查 Apps Script 的執行紀錄。'
+          };
+        }
+      });
+    })
     .catch(function (err) {
       return {
         success: false,
@@ -1094,15 +1107,16 @@
       }
 
       CONFIG = config;
-      document.getElementById('choice-unit-date').textContent =
-        '單元：' + (config.unit || '未設定') + '　日期：' + (config.examDate || '未設定');
+      document.getElementById('choice-unit-date').textContent = config.unit
+        ? ('今日小考單元：' + config.unit + '　日期：' + (config.examDate || ''))
+        : '';
 
       if (config.canTake) {
         btnExam.disabled = false;
-        btnExam.textContent = '開始／繼續作答本場小考';
+        btnExam.textContent = config.buttonLabel || '進入考試';
       } else {
         btnExam.disabled = true;
-        btnExam.textContent = '目前無法作答本場小考';
+        btnExam.textContent = config.buttonLabel || '目前無法作答本場小考';
         noteEl.textContent = config.eligibilityReason || '目前無法作答本場小考。';
         noteEl.classList.remove('hidden');
       }
