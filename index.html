@@ -921,8 +921,8 @@
   // 「網頁應用程式網址」，格式類似：
   // https://script.google.com/macros/s/AKfycbxxxxxxxxxxxxxxxxxxxx/exec
   // ============================================================
-  const API_URL = 'https://script.google.com/macros/s/AKfycby4ED6Mp2LxYZIz4mHuG2qSH5GN5cFTJnMnd_KRTlRCygawjj2KxTh-VWAL15H3DMHX/exec';
-  const FRONTEND_VERSION = 'v20 (2026-08-27)';
+  const API_URL = 'https://script.google.com/macros/library/d/127z2eQflsiFsqj_id7jVrTeetbY281gxUIaM23gWlGcJKj0FD4BKjy3h/18';
+  const FRONTEND_VERSION = 'v21 (2026-08-27)';
   document.addEventListener('DOMContentLoaded', function () {
     const versionEl = document.getElementById('version-display');
     if (versionEl) versionEl.textContent = FRONTEND_VERSION;
@@ -2094,7 +2094,7 @@
     const subtitleEl = document.getElementById('question-stats-subtitle');
     const bodyEl = document.getElementById('question-stats-body');
 
-    subtitleEl.textContent = '「' + quizName + '」這場小考中，依全體學生的作答結果統計各題正確率、各選項作答人數與平均作答時間。';
+    subtitleEl.textContent = '「' + quizName + '」這場小考中，依全體學生的作答結果統計各題正確率、正確答案、各選項作答人數與平均作答時間。';
 
     if (!stats || stats.length === 0) {
       bodyEl.innerHTML = '<p class="empty-note">這場小考目前還沒有任何作答資料</p>';
@@ -2109,12 +2109,16 @@
 
       const optionCounts = s.optionCounts || { A: 0, B: 0, C: 0, D: 0 };
       const optionsFull = s.options || { A: '', B: '', C: '', D: '' };
+      const correctAnswer = String(s.correctAnswer || '');
 
       const optionRowsHtml = ['A', 'B', 'C', 'D']
         .filter(function (letter) { return optionsFull[letter]; })
         .map(function (letter) {
-          return '<div class="option-review">' +
-            '<span class="opt-icon">' + letter + '.</span>' +
+          const isCorrectOption = correctAnswer.indexOf(letter) !== -1;
+          const cls = isCorrectOption ? 'correct-pick' : '';
+          const icon = isCorrectOption ? '✅' : '';
+          return '<div class="option-review ' + cls + '">' +
+            '<span class="opt-icon">' + icon + letter + '.</span>' +
             '<span>' + escapeHtml(optionsFull[letter]) + '　（' + (optionCounts[letter] || 0) + ' 人選）</span>' +
             '</div>';
         }).join('');
@@ -2131,6 +2135,7 @@
         '<div class="bar-chart-value">' + (s.correctRate === null ? '－' : s.correctRate + '%') + '</div>' +
         '</div>' +
         '<div style="font-weight:700; margin:8px 0 6px;">' + escapeHtml(s.question) + '</div>' +
+        '<div class="field-hint" style="margin-bottom:6px;">正確答案：<b class="correct-answer-text">' + escapeHtml(correctAnswer) + '</b></div>' +
         optionRowsHtml +
         '<div class="field-hint" style="margin-top:6px;">平均作答時間：' + timeText + '</div>' +
         '</div>';
