@@ -659,7 +659,7 @@
   <div id="screen-review" class="hidden">
     <div class="card">
       <h1>今日錯題解析</h1>
-      <p class="subtitle" id="review-subtitle">僅顯示題號與解析，不含題幹、選項與答案，開放時間為當天 18:00～18:10。</p>
+      <p class="subtitle" id="review-subtitle">依老師設定，顯示當天這場小考的錯題內容與解析。</p>
       <div id="review-body"></div>
       <button id="btn-back-to-choice-from-review" class="secondary" style="margin-top:20px;">返回</button>
     </div>
@@ -843,6 +843,33 @@
       <button id="btn-admin-reset">重設此學生密碼</button>
       <p id="admin-message" style="font-size:13px; margin-top:12px; display:none;"></p>
     </div>
+
+    <div class="card">
+      <h2>錯題解析設定</h2>
+      <p class="subtitle" style="margin-bottom:14px;">這裡設定的是<b>學生端</b>「查看今日錯題解析」功能的開放時段與呈現內容（教師端「考題分析」不受此設定影響，一律完整顯示題目與選項）。</p>
+
+      <label for="admin-review-start">解析開放起始時間</label>
+      <input type="text" id="admin-review-start" placeholder="例如：18:00">
+
+      <label for="admin-review-end">解析開放結束時間</label>
+      <input type="text" id="admin-review-end" placeholder="例如：18:10">
+
+      <label for="admin-show-content">學生「錯題解析」是否顯示題幹與選項</label>
+      <select id="admin-show-content">
+        <option value="true">顯示題幹與選項（學生可以看到完整題目與四個選項，加上解析）</option>
+        <option value="false">關閉顯示（只顯示「第幾題」與解析文字，不顯示題目與選項內容）</option>
+      </select>
+
+      <button id="btn-save-admin-settings" style="margin-top:20px;">儲存設定</button>
+      <p id="admin-settings-message" style="font-size:13px; margin-top:12px; display:none;"></p>
+    </div>
+
+    <div class="card">
+      <h2>匯出所有學生歷次成績</h2>
+      <p class="subtitle" style="margin-bottom:14px;">下載一份 Excel 檔（.xlsx），包含目前系統裡所有學生、所有場次小考的完整成績紀錄。</p>
+      <button id="btn-export-excel" class="secondary">下載歷次成績 Excel 檔</button>
+      <p id="export-message" style="font-size:13px; margin-top:12px; display:none;"></p>
+    </div>
   </div>
 
   <!-- ================= 畫面三：結果頁 ================= -->
@@ -895,7 +922,7 @@
   // https://script.google.com/macros/s/AKfycbxxxxxxxxxxxxxxxxxxxx/exec
   // ============================================================
   const API_URL = 'https://script.google.com/macros/s/AKfycby4ED6Mp2LxYZIz4mHuG2qSH5GN5cFTJnMnd_KRTlRCygawjj2KxTh-VWAL15H3DMHX/exec';
-  const FRONTEND_VERSION = 'v17 (2026-08-27)';
+  const FRONTEND_VERSION = 'v20 (2026-08-27)';
   document.addEventListener('DOMContentLoaded', function () {
     const versionEl = document.getElementById('version-display');
     if (versionEl) versionEl.textContent = FRONTEND_VERSION;
@@ -1172,8 +1199,10 @@
 
       document.getElementById('screen-choice').classList.add('hidden');
       document.getElementById('screen-review').classList.remove('hidden');
-      document.getElementById('review-subtitle').textContent =
-        '「' + result.quizName + '」僅顯示題號與解析，不含題幹、選項與答案，開放時間為當天 18:00～18:10。';
+      const hasContent = result.wrongList && result.wrongList.some(function (w) { return w.question; });
+      document.getElementById('review-subtitle').textContent = hasContent
+        ? ('「' + result.quizName + '」錯題的題目、選項與解析。')
+        : ('「' + result.quizName + '」僅顯示題號與解析，不含題幹與選項。');
       renderReview(result.wrongList);
     });
   });
@@ -1191,9 +1220,21 @@
     }
     let html = '';
     wrongList.forEach(function (w) {
+      let contentHtml = '';
+      if (w.question) {
+        contentHtml += '<div style="font-weight:700; margin:6px 0;">' + escapeHtml(w.question) + '</div>';
+      }
+      if (w.options) {
+        ['A', 'B', 'C', 'D'].forEach(function (letter) {
+          if (w.options[letter]) {
+            contentHtml += '<div class="option-review"><span class="opt-icon">' + letter + '.</span><span>' + escapeHtml(w.options[letter]) + '</span></div>';
+          }
+        });
+      }
       html +=
         '<div class="detail-item wrong">' +
         '<div style="font-weight:700; margin-bottom:6px;">第 ' + w.number + ' 題</div>' +
+        contentHtml +
         '<div class="explain">💡 ' + escapeHtml(w.explanation) + '</div>' +
         '</div>';
     });
@@ -2067,25 +2108,34 @@
       const label = '第' + (idx + 1) + '題';
 
       const optionCounts = s.optionCounts || { A: 0, B: 0, C: 0, D: 0 };
-      const optionText = ['A', 'B', 'C', 'D'].map(function (letter) {
-        return letter + '：' + (optionCounts[letter] || 0) + '人';
-      }).join('　');
+      const optionsFull = s.options || { A: '', B: '', C: '', D: '' };
+
+      const optionRowsHtml = ['A', 'B', 'C', 'D']
+        .filter(function (letter) { return optionsFull[letter]; })
+        .map(function (letter) {
+          return '<div class="option-review">' +
+            '<span class="opt-icon">' + letter + '.</span>' +
+            '<span>' + escapeHtml(optionsFull[letter]) + '　（' + (optionCounts[letter] || 0) + ' 人選）</span>' +
+            '</div>';
+        }).join('');
 
       const timeText = (s.avgAnswerTimeSeconds === null || s.avgAnswerTimeSeconds === undefined)
         ? '尚無資料'
         : (s.avgAnswerTimeSeconds + ' 秒');
 
       html +=
-        '<div style="margin-bottom:22px;">' +
-        '<div class="bar-chart-row" title="' + escapeHtml(s.question) + '">' +
+        '<div style="margin-bottom:26px;">' +
+        '<div class="bar-chart-row">' +
         '<div class="bar-chart-label">' + label + '（' + escapeHtml(s.difficulty) + '）</div>' +
         '<div class="bar-chart-track"><div class="bar-chart-fill ' + fillClass + '" style="width:' + pct + '%;"></div></div>' +
         '<div class="bar-chart-value">' + (s.correctRate === null ? '－' : s.correctRate + '%') + '</div>' +
         '</div>' +
-        '<div class="field-hint" style="margin-top:4px;">選項人數分布：' + optionText + '　｜　平均作答時間：' + timeText + '</div>' +
+        '<div style="font-weight:700; margin:8px 0 6px;">' + escapeHtml(s.question) + '</div>' +
+        optionRowsHtml +
+        '<div class="field-hint" style="margin-top:6px;">平均作答時間：' + timeText + '</div>' +
         '</div>';
     });
-    html += '<p class="field-hint" style="margin-top:10px;">滑鼠移到長條上可看到完整題目內容；平均作答時間是指學生「最後一次選擇這一題答案」距離開始作答的時間，因為畫面是一次顯示所有題目，並非精確的單題停留時間，僅供參考整體作答節奏。</p>';
+    html += '<p class="field-hint" style="margin-top:10px;">平均作答時間是指學生「最後一次選擇這一題答案」距離開始作答的時間，因為畫面是一次顯示所有題目，並非精確的單題停留時間，僅供參考整體作答節奏。</p>';
     bodyEl.innerHTML = html;
   }
 
@@ -2133,6 +2183,124 @@
 
 
   // ============================================================
+  // 教師後台：儲存錯題解析設定 / 題幹選項顯示開關
+  // ============================================================
+  document.getElementById('btn-save-admin-settings').addEventListener('click', function () {
+    const teacherUsername = document.getElementById('admin-username').value.trim();
+    const teacherPassword = document.getElementById('admin-password').value;
+    const btn = this;
+    const msgEl = document.getElementById('admin-settings-message');
+    msgEl.style.display = 'none';
+
+    if (!teacherUsername || !teacherPassword) {
+      msgEl.textContent = '請先輸入教師帳號與密碼。';
+      msgEl.style.color = 'var(--danger)';
+      msgEl.style.display = 'block';
+      return;
+    }
+
+    const settings = {
+      reviewStart: document.getElementById('admin-review-start').value.trim() || '18:00',
+      reviewEnd: document.getElementById('admin-review-end').value.trim() || '18:10',
+      showQuestionContent: document.getElementById('admin-show-content').value === 'true'
+    };
+
+    btn.disabled = true;
+    btn.textContent = '儲存中…';
+
+    callAPI('updateAdminSettings', {
+      adminUsername: teacherUsername,
+      adminPassword: teacherPassword,
+      settings: settings
+    }).then(function (result) {
+      btn.disabled = false;
+      btn.textContent = '儲存設定';
+      msgEl.style.display = 'block';
+      if (result.success) {
+        msgEl.style.color = 'var(--accent-dark)';
+        msgEl.textContent = result.message;
+      } else {
+        msgEl.style.color = 'var(--danger)';
+        msgEl.textContent = result.error;
+      }
+    });
+  });
+
+  // 進入教師後台時，先讀取目前的設定值填入表單（這個讀取不需要驗證身分，因為不含敏感資訊）
+  function loadAdminSettingsIntoForm() {
+    callAPI('getAdminSettings', {}).then(function (result) {
+      if (!result || !result.success) return;
+      document.getElementById('admin-review-start').value = result.settings.reviewStart;
+      document.getElementById('admin-review-end').value = result.settings.reviewEnd;
+      document.getElementById('admin-show-content').value = result.settings.showQuestionContent ? 'true' : 'false';
+    });
+  }
+
+
+  // ============================================================
+  // 教師後台：匯出所有學生歷次成績（Excel）
+  // ============================================================
+  document.getElementById('btn-export-excel').addEventListener('click', function () {
+    const teacherUsername = document.getElementById('admin-username').value.trim();
+    const teacherPassword = document.getElementById('admin-password').value;
+    const btn = this;
+    const msgEl = document.getElementById('export-message');
+    msgEl.style.display = 'none';
+
+    if (!teacherUsername || !teacherPassword) {
+      msgEl.textContent = '請先輸入教師帳號與密碼。';
+      msgEl.style.color = 'var(--danger)';
+      msgEl.style.display = 'block';
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '匯出中…（資料多時可能需要一點時間）';
+
+    callAPI('exportAllScoresToExcel', {
+      adminUsername: teacherUsername,
+      adminPassword: teacherPassword
+    }).then(function (result) {
+      btn.disabled = false;
+      btn.textContent = '下載歷次成績 Excel 檔';
+      msgEl.style.display = 'block';
+
+      if (!result.success) {
+        msgEl.style.color = 'var(--danger)';
+        msgEl.textContent = result.error;
+        return;
+      }
+
+      downloadBase64File_(
+        result.base64Data,
+        result.fileName,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      msgEl.style.color = 'var(--accent-dark)';
+      msgEl.textContent = '已產生檔案「' + result.fileName + '」，請查看瀏覽器的下載紀錄。';
+    });
+  });
+
+  function downloadBase64File_(base64Data, fileName, mimeType) {
+    const byteChars = atob(base64Data);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) {
+      byteNumbers[i] = byteChars.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+
+  // ============================================================
   // 頁面載入：判斷是否為教師後台 / 成績查詢模式，並取得考試設定
   // ============================================================
   window.addEventListener('load', function () {
@@ -2141,6 +2309,7 @@
     if (params.get('mode') === 'admin') {
       document.getElementById('screen-info').classList.add('hidden');
       document.getElementById('screen-admin').classList.remove('hidden');
+      loadAdminSettingsIntoForm();
       return;
     }
     if (params.get('mode') === 'grades') {
