@@ -260,6 +260,14 @@
     margin-bottom: 4px;
   }
 
+  .question-image, .explanation-image {
+    max-width: 100%;
+    display: block;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin: 10px 0;
+  }
+
   #watermark-overlay {
     position: fixed;
     inset: 0;
@@ -922,7 +930,7 @@
   // https://script.google.com/macros/s/AKfycbxxxxxxxxxxxxxxxxxxxx/exec
   // ============================================================
   const API_URL = 'https://script.google.com/macros/s/AKfycby4ED6Mp2LxYZIz4mHuG2qSH5GN5cFTJnMnd_KRTlRCygawjj2KxTh-VWAL15H3DMHX/exec';
-  const FRONTEND_VERSION = 'v21 (2026-08-27)';
+  const FRONTEND_VERSION = 'v24 (2026-08-27)';
   document.addEventListener('DOMContentLoaded', function () {
     const versionEl = document.getElementById('version-display');
     if (versionEl) versionEl.textContent = FRONTEND_VERSION;
@@ -1224,6 +1232,9 @@
       if (w.question) {
         contentHtml += '<div style="font-weight:700; margin:6px 0;">' + escapeHtml(w.question) + '</div>';
       }
+      if (w.imageUrl) {
+        contentHtml += renderImageHtml(w.imageUrl, 'question-image');
+      }
       if (w.options) {
         ['A', 'B', 'C', 'D'].forEach(function (letter) {
           if (w.options[letter]) {
@@ -1231,11 +1242,13 @@
           }
         });
       }
+      const explanationImageHtml = w.explanationImageUrl ? renderImageHtml(w.explanationImageUrl, 'explanation-image') : '';
       html +=
         '<div class="detail-item wrong">' +
         '<div style="font-weight:700; margin-bottom:6px;">第 ' + w.number + ' 題</div>' +
         contentHtml +
         '<div class="explain">💡 ' + escapeHtml(w.explanation) + '</div>' +
+        explanationImageHtml +
         '</div>';
     });
     body.innerHTML = html;
@@ -1402,9 +1415,12 @@
         ? '<span class="type-badge multi">多選題（可複選）</span>'
         : '<span class="type-badge single">單選題</span>';
 
+      const questionImageHtml = renderImageHtml(q.imageUrl, 'question-image');
+
       block.innerHTML =
         '<div class="q-meta">第 ' + (index + 1) + ' 題　·　' + escapeHtml(q.region || '') + '　·　' + typeBadge + '</div>' +
         '<div class="q-text">' + escapeHtml(q.question) + '</div>' +
+        questionImageHtml +
         optionsHtml;
 
       container.appendChild(block);
@@ -1536,6 +1552,39 @@
     }
     overlay.innerHTML = html;
     document.body.appendChild(overlay);
+  }
+
+  // 把 Google 試算表裡貼的 Google Drive「分享連結」轉換成瀏覽器能直接顯示的圖片網址。
+  // 支援常見的幾種貼法：完整分享連結、?id=xxx 格式、或直接貼檔案 ID 本身。
+  // 圖片在 Drive 裡要設定成「知道連結的使用者」可檢視，才能正常顯示。
+  function convertDriveLinkToImageUrl(rawUrl) {
+    if (!rawUrl) return '';
+    rawUrl = String(rawUrl).trim();
+    if (!rawUrl) return '';
+
+    let fileId = '';
+    const patterns = [
+      /\/file\/d\/([a-zA-Z0-9_-]+)/,
+      /[?&]id=([a-zA-Z0-9_-]+)/,
+      /\/d\/([a-zA-Z0-9_-]+)/
+    ];
+    for (let i = 0; i < patterns.length; i++) {
+      const m = rawUrl.match(patterns[i]);
+      if (m && m[1]) { fileId = m[1]; break; }
+    }
+    if (!fileId && /^[a-zA-Z0-9_-]{15,}$/.test(rawUrl)) {
+      fileId = rawUrl; // 使用者直接貼了檔案 ID，而不是完整連結
+    }
+
+    if (!fileId) return rawUrl; // 辨識不出 Drive 格式，就當作一般圖片網址直接使用
+    return 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w1000';
+  }
+
+  // 產生圖片的 HTML（找不到網址時回傳空字串，不影響版面）
+  function renderImageHtml(rawUrl, cssClass) {
+    const url = convertDriveLinkToImageUrl(rawUrl);
+    if (!url) return '';
+    return '<img class="' + cssClass + '" src="' + url.replace(/"/g, '&quot;') + '" alt="圖片" loading="lazy" onerror="this.style.display=\'none\';">';
   }
 
   function escapeHtml(str) {
@@ -1707,15 +1756,19 @@
         }
         const answerClass = d.isCorrect ? 'correct-answer-text' : 'wrong-answer-text';
         const optionsHtml = renderOptionReview(d);
+        const questionImageHtml = renderImageHtml(d.imageUrl, 'question-image');
+        const explanationImageHtml = renderImageHtml(d.explanationImageUrl, 'explanation-image');
         html +=
           '<div class="detail-item ' + (d.isCorrect ? 'correct' : 'wrong') + '">' +
           '<span class="tag">' + (d.isCorrect ? '✅ 答對' : '❌ 答錯') + '</span>' +
           '<div style="font-weight:700; margin-bottom:6px;">第 ' + (idx + 1) + ' 題：' + escapeHtml(d.question) + '</div>' +
+          questionImageHtml +
           '<div class="ans-row">您的答案：<b class="' + answerClass + '">' + escapeHtml(d.studentAnswer) + '</b>　' +
           '正確答案：<b class="correct-answer-text">' + escapeHtml(d.correctAnswer) + '</b></div>' +
           optionsHtml +
           statLine +
           '<div class="explain">💡 ' + escapeHtml(d.explanation) + '</div>' +
+          explanationImageHtml +
           '</div>';
       });
       html += '</div>';
@@ -2135,6 +2188,7 @@
         '<div class="bar-chart-value">' + (s.correctRate === null ? '－' : s.correctRate + '%') + '</div>' +
         '</div>' +
         '<div style="font-weight:700; margin:8px 0 6px;">' + escapeHtml(s.question) + '</div>' +
+        renderImageHtml(s.imageUrl, 'question-image') +
         '<div class="field-hint" style="margin-bottom:6px;">正確答案：<b class="correct-answer-text">' + escapeHtml(correctAnswer) + '</b></div>' +
         optionRowsHtml +
         '<div class="field-hint" style="margin-top:6px;">平均作答時間：' + timeText + '</div>' +
