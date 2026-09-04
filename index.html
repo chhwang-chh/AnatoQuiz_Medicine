@@ -635,7 +635,7 @@
 
       <button id="btn-choice-exam" style="margin-top:10px;">進入考試</button>
       <button id="btn-choice-scores" class="secondary" style="margin-top:12px;">查看我的歷次成績</button>
-      <button id="btn-choice-review" class="secondary" style="margin-top:12px;">查看今日錯題解析（僅當天 18:00～18:10 開放）</button>
+      <button id="btn-choice-review" class="secondary" style="margin-top:12px;">查看今日錯題解析</button>
     </div>
   </div>
 
@@ -930,25 +930,29 @@
   // https://script.google.com/macros/s/AKfycbxxxxxxxxxxxxxxxxxxxx/exec
   // ============================================================
   const API_URL = 'https://script.google.com/macros/s/AKfycby4ED6Mp2LxYZIz4mHuG2qSH5GN5cFTJnMnd_KRTlRCygawjj2KxTh-VWAL15H3DMHX/exec';
-  const FRONTEND_VERSION = 'v24 (2026-08-27)';
+  const FRONTEND_VERSION = 'v25 (2026-09-04)';
   document.addEventListener('DOMContentLoaded', function () {
     const versionEl = document.getElementById('version-display');
     if (versionEl) versionEl.textContent = FRONTEND_VERSION;
   });
 
   function callAPI(action, payload) {
+    // ── 15 秒逾時保護（AbortController）──
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timeoutId = controller ? setTimeout(function () { controller.abort(); }, 15000) : null;
+
     return fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: action, payload: payload || {} })
+      body: JSON.stringify({ action: action, payload: payload || {} }),
+      signal: controller ? controller.signal : undefined
     })
     .then(function (response) {
+      if (timeoutId) clearTimeout(timeoutId);
       return response.text().then(function (text) {
         try {
           return JSON.parse(text);
         } catch (parseErr) {
-          // 後端沒有回傳預期的 JSON（通常是 Google 那邊逾時或暫時性錯誤，回傳了一整頁 HTML）。
-          // 這種情況重試一次經常就能解決，所以錯誤訊息裡也提醒使用者可以再試一次。
           return {
             success: false,
             error: '伺服器暫時沒有正確回應（可能是連線逾時或忙線），請稍後再試一次。若持續發生，請聯絡老師檢查 Apps Script 的執行紀錄。'
@@ -957,9 +961,13 @@
       });
     })
     .catch(function (err) {
+      if (timeoutId) clearTimeout(timeoutId);
+      var isTimeout = err && err.name === 'AbortError';
       return {
         success: false,
-        error: '無法連線到後端伺服器，請確認網路連線，或聯絡老師確認 API_URL 是否設定正確。（' + err.message + '）'
+        error: isTimeout
+          ? '連線逾時（超過 15 秒），伺服器可能正忙，請稍候再試一次。'
+          : '無法連線到後端伺服器，請確認網路連線，或聯絡老師確認 API_URL 是否設定正確。（' + err.message + '）'
       };
     });
   }
@@ -1146,6 +1154,24 @@
         ? ('今日小考單元：' + config.unit + '　日期：' + (config.examDate || ''))
         : '';
 
+      // ── 更新登入頁的作答規則文字（時間限制 & 違規次數），反映後台最新設定 ──
+      if (config.timeMinutes) {
+        document.getElementById('rule-time').innerHTML =
+          '考試時間限制為 <b>' + config.timeMinutes + '</b> 分鐘，時間結束將自動強制交卷。';
+      }
+      if (config.maxTabSwitch) {
+        document.getElementById('rule-tab').innerHTML =
+          '切換分頁、離開視窗或縮小畫面達 <b>' + config.maxTabSwitch + '</b> 次後，系統將自動強制交卷。';
+      }
+
+      // ── 更新「查看錯題解析」按鈕文字，顯示後台設定的實際開放時段 ──
+      var reviewBtn = document.getElementById('btn-choice-review');
+      if (reviewBtn && config.reviewStart && config.reviewEnd) {
+        reviewBtn.textContent = '查看今日錯題解析（當天 ' + config.reviewStart + '～' + config.reviewEnd + ' 開放）';
+      } else if (reviewBtn) {
+        reviewBtn.textContent = '查看今日錯題解析';
+      }
+
       if (config.canTake) {
         btnExam.disabled = false;
         btnExam.textContent = config.buttonLabel || '進入考試';
@@ -1198,7 +1224,10 @@
 
     callAPI('getWrongAnswersReview', { studentId: studentInfo.studentId, password: studentInfo.password }).then(function (result) {
       btn.disabled = false;
-      btn.textContent = '查看今日錯題解析（僅當天 18:00～18:10 開放）';
+      // 恢復按鈕文字（使用 CONFIG 中存的解析時間，若無則用預設文字）
+      var _rs = (CONFIG && CONFIG.reviewStart) ? CONFIG.reviewStart : '18:00';
+      var _re = (CONFIG && CONFIG.reviewEnd) ? CONFIG.reviewEnd : '18:10';
+      btn.textContent = '查看今日錯題解析（當天 ' + _rs + '～' + _re + ' 開放）';
 
       if (!result.success) {
         alert(result.error);
@@ -1285,49 +1314,73 @@
     renderScoreTrendChart('my-scores-chart', chronological);
   }
 
-  // 畫出「這位學生每次小考得分」的簡易折線圖，X 軸是考試順序（由舊到新），Y 軸是得分
-  function renderScoreTrendChart(containerId, chronologicalHistory) {
-    const container = document.getElementById(containerId);
-    if (!chronologicalHistory || chronologicalHistory.length < 2) {
-      container.innerHTML = ''; // 只有一次紀錄時不畫圖，表格已經足夠
-      return;
-    }
+  // 畫出「這位學生每次小考得分」的折線圖，每頁最多顯示 15 筆，超過時可分頁切換
+  var _trendCurrentPage = 0;
+  var _trendHistory = [];
+  var _trendContainerId = '';
+  var TREND_PAGE_SIZE = 15;
 
-    const width = 640, height = 220;
-    const marginLeft = 34, marginRight = 14, marginTop = 16, marginBottom = 56;
-    const plotWidth = width - marginLeft - marginRight;
-    const plotHeight = height - marginTop - marginBottom;
-    const n = chronologicalHistory.length;
-    const xStep = n > 1 ? plotWidth / (n - 1) : 0;
+  function renderScoreTrendChart(containerId, chronologicalHistory) {
+    _trendContainerId = containerId;
+    _trendHistory = chronologicalHistory || [];
+    // 預設顯示最新一頁
+    _trendCurrentPage = Math.max(0, Math.ceil(_trendHistory.length / TREND_PAGE_SIZE) - 1);
+    _renderTrendPage();
+  }
+
+  function _renderTrendPage() {
+    var container = document.getElementById(_trendContainerId);
+    if (!_trendHistory || _trendHistory.length < 2) { container.innerHTML = ''; return; }
+
+    var totalPages = Math.ceil(_trendHistory.length / TREND_PAGE_SIZE);
+    var startIdx = _trendCurrentPage * TREND_PAGE_SIZE;
+    var slice = _trendHistory.slice(startIdx, startIdx + TREND_PAGE_SIZE);
+
+    var width = 640, height = 220;
+    var marginLeft = 34, marginRight = 14, marginTop = 16, marginBottom = 56;
+    var plotWidth = width - marginLeft - marginRight;
+    var plotHeight = height - marginTop - marginBottom;
+    var n = slice.length;
+    var xStep = n > 1 ? plotWidth / (n - 1) : 0;
 
     function xScale(i) { return marginLeft + i * xStep; }
-    function yScale(score) { return marginTop + plotHeight - (Math.max(0, Math.min(100, score)) / 100) * plotHeight; }
+    function yScale(v) { return marginTop + plotHeight - (Math.max(0, Math.min(100, v)) / 100) * plotHeight; }
 
-    let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" style="width:100%; height:auto;">';
-
-    const yTicks = 4;
-    for (let t = 0; t <= yTicks; t++) {
-      const val = Math.round((100 / yTicks) * t);
-      const y = yScale(val);
+    var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" style="width:100%; height:auto;">';
+    for (var t = 0; t <= 4; t++) {
+      var val = Math.round((100 / 4) * t), y = yScale(val);
       svg += '<line x1="' + marginLeft + '" y1="' + y + '" x2="' + (width - marginRight) + '" y2="' + y + '" stroke="#EEF1F6" stroke-width="1"></line>';
       svg += '<text x="' + (marginLeft - 8) + '" y="' + (y + 4) + '" text-anchor="end" font-size="11" fill="#6B7280">' + val + '</text>';
     }
 
-    let points = '';
-    chronologicalHistory.forEach(function (h, i) {
-      points += xScale(i) + ',' + yScale(h.percent) + ' ';
-    });
+    var points = '';
+    slice.forEach(function (h, i) { points += xScale(i) + ',' + yScale(h.percent) + ' '; });
     svg += '<polyline points="' + points.trim() + '" fill="none" stroke="var(--accent)" stroke-width="2.5"></polyline>';
 
-    chronologicalHistory.forEach(function (h, i) {
-      const x = xScale(i), y = yScale(h.percent);
-      const dotColor = h.trend === 'down' ? '#D6483F' : (h.trend === 'up' ? '#0E8C7C' : '#16233F');
-      svg += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + dotColor + '"><title>' + escapeHtml(h.quiz) + '：' + h.percent + '</title></circle>';
+    slice.forEach(function (h, i) {
+      var x = xScale(i), yv = yScale(h.percent);
+      var dotColor = h.trend === 'down' ? '#D6483F' : (h.trend === 'up' ? '#0E8C7C' : '#16233F');
+      svg += '<circle cx="' + x + '" cy="' + yv + '" r="4" fill="' + dotColor + '"><title>' + escapeHtml(h.quiz) + '：' + h.percent + '</title></circle>';
       svg += '<text x="' + x + '" y="' + (height - marginBottom + 16) + '" text-anchor="middle" font-size="9.5" fill="#6B7280" transform="rotate(20 ' + x + ' ' + (height - marginBottom + 16) + ')">' + escapeHtml(h.quiz.length > 10 ? h.quiz.substring(0, 10) + '…' : h.quiz) + '</text>';
     });
-
     svg += '</svg>';
-    container.innerHTML = '<div style="overflow-x:auto; margin-bottom:6px;">' + svg + '</div>';
+
+    var pageNav = '';
+    if (totalPages > 1) {
+      var rangeStart = startIdx + 1, rangeEnd = Math.min(startIdx + TREND_PAGE_SIZE, _trendHistory.length);
+      pageNav = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:13px;color:var(--text-muted);">' +
+        '<button onclick="_trendPrev()" style="width:auto;padding:5px 14px;font-size:13px;background:var(--navy);"' + (_trendCurrentPage === 0 ? ' disabled' : '') + '>◀ 較早</button>' +
+        '<span style="flex:1;text-align:center;">第 ' + rangeStart + '–' + rangeEnd + ' 筆（共 ' + _trendHistory.length + ' 次小考）</span>' +
+        '<button onclick="_trendNext()" style="width:auto;padding:5px 14px;font-size:13px;background:var(--navy);"' + (_trendCurrentPage >= totalPages - 1 ? ' disabled' : '') + '>較新 ▶</button>' +
+        '</div>';
+    }
+
+    container.innerHTML = pageNav + '<div style="overflow-x:auto; margin-bottom:6px;">' + svg + '</div>';
+  }
+
+  function _trendPrev() { if (_trendCurrentPage > 0) { _trendCurrentPage--; _renderTrendPage(); } }
+  function _trendNext() {
+    if (_trendCurrentPage < Math.ceil(_trendHistory.length / TREND_PAGE_SIZE) - 1) { _trendCurrentPage++; _renderTrendPage(); }
   }
 
   function loadQuestionsAndStart() {
@@ -2014,8 +2067,11 @@
     });
   }
 
-  // 折線圖：X 軸為分數區間、Y 軸為人數，不同小考用不同顏色的線呈現，
-  // 方便比較同一批學生（或同一科系/組別）在歷次小考中成績分佈的變化。
+  // 折線圖：X 軸為分數區間、Y 軸為人數，不同小考用不同顏色的線呈現。
+  // 若小考超過 8 場，預設只顯示最新 8 場並提供下拉選單讓老師自由選擇。
+  var _lineChartSelections = {}; // { containerId: Set of selected quizNames }
+  var MAX_VISIBLE_SERIES = 8;
+
   function renderLineDistributionChart(containerId, records) {
     const container = document.getElementById(containerId);
     if (!records || records.length === 0) {
@@ -2043,8 +2099,16 @@
       quizGroups[q].push(parsePercent(r.percent));
     });
 
-    const quizNames = Object.keys(quizGroups).sort();
+    const allQuizNames = Object.keys(quizGroups).sort();
     const colors = ['#0E8C7C', '#D6483F', '#1D5FA8', '#F0A93B', '#7A3EC2', '#E85D9C', '#4C9E4C', '#B8860B'];
+
+    // 若尚無選取記錄，預設選最新的 MAX_VISIBLE_SERIES 場
+    if (!_lineChartSelections[containerId]) {
+      var defaultSelected = new Set(allQuizNames.slice(-MAX_VISIBLE_SERIES));
+      _lineChartSelections[containerId] = defaultSelected;
+    }
+    var selectedSet = _lineChartSelections[containerId];
+    var quizNames = allQuizNames.filter(function (n) { return selectedSet.has(n); });
 
     const seriesData = quizNames.map(function (name, idx) {
       const scores = quizGroups[name];
@@ -2104,7 +2168,50 @@
     });
     legendHtml += '</div>';
 
-    container.innerHTML = '<div style="overflow-x:auto;">' + svg + '</div>' + legendHtml;
+    // 若小考場次超過 MAX_VISIBLE_SERIES，顯示勾選框讓老師選擇要比較哪幾場
+    let selectorHtml = '';
+    if (allQuizNames.length > MAX_VISIBLE_SERIES) {
+      selectorHtml = '<div style="margin-bottom:10px;padding:10px 12px;background:#F7F8FA;border-radius:8px;border:1px solid var(--border);">' +
+        '<div style="font-size:12.5px;font-weight:700;color:var(--navy);margin-bottom:8px;">選擇要顯示的小考（共 ' + allQuizNames.length + ' 場，最多同時顯示 ' + MAX_VISIBLE_SERIES + ' 場）</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
+      allQuizNames.forEach(function (name, idx) {
+        const dotColor = colors[idx % colors.length];
+        const isChecked = selectedSet.has(name);
+        const safeName = name.replace(/"/g, '&quot;');
+        const safeId = 'ldc-' + containerId + '-' + idx;
+        selectorHtml += '<label style="display:flex;align-items:center;gap:4px;font-size:12.5px;cursor:pointer;white-space:nowrap;">' +
+          '<input type="checkbox" data-cid="' + containerId + '" data-qname="' + safeName + '" ' + (isChecked ? 'checked' : '') + ' onchange="_lineChartToggle(this)" style="width:13px;height:13px;">' +
+          '<span class="dist-legend-dot" style="background:' + dotColor + ';width:8px;height:8px;border-radius:50%;flex-shrink:0;"></span>' +
+          '<span>' + escapeHtml(name) + '</span></label>';
+      });
+      selectorHtml += '</div></div>';
+    }
+
+    container.setAttribute('data-records', JSON.stringify(records));
+    container.innerHTML = selectorHtml + '<div style="overflow-x:auto;">' + svg + '</div>' + legendHtml;
+  }
+
+  function _lineChartToggle(checkbox) {
+    var cid = checkbox.getAttribute('data-cid');
+    var qname = checkbox.getAttribute('data-qname');
+    if (!_lineChartSelections[cid]) _lineChartSelections[cid] = new Set();
+    var sel = _lineChartSelections[cid];
+    if (checkbox.checked) {
+      if (sel.size >= MAX_VISIBLE_SERIES) {
+        checkbox.checked = false;
+        alert('最多同時顯示 ' + MAX_VISIBLE_SERIES + ' 場小考，請先取消勾選其他場次再勾選新的。');
+        return;
+      }
+      sel.add(qname);
+    } else {
+      sel.delete(qname);
+    }
+    // 重新渲染（需要從 records 重建，用 container 上的 data-records 屬性）
+    var container = document.getElementById(cid);
+    var recordsJson = container.getAttribute('data-records');
+    if (recordsJson) {
+      try { renderLineDistributionChart(cid, JSON.parse(recordsJson)); } catch(e) {}
+    }
   }
 
   function bin_label(bins, i) {
