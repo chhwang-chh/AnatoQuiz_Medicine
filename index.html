@@ -925,12 +925,11 @@
 
 <script>
   // ============================================================
-  // 【重要】請把下面這行改成您自己 Google Apps Script 部署後拿到的
-  // 「網頁應用程式網址」，格式類似：
-  // https://script.google.com/macros/s/AKfycbxxxxxxxxxxxxxxxxxxxx/exec
+  // 【重要】請把下面這行改成 Firebase Functions 部署後取得的 api 網址
   // ============================================================
-  const API_URL = 'https://script.google.com/macros/s/AKfycby4ED6Mp2LxYZIz4mHuG2qSH5GN5cFTJnMnd_KRTlRCygawjj2KxTh-VWAL15H3DMHX/exec';
-  const FRONTEND_VERSION = 'v25 (2026-09-04)';
+  // 部署 Firebase Functions 後，把下方網址換成 firebase deploy 顯示的 api URL
+  const API_URL = 'https://asia-east1-anatomyquiz-a5cf5.cloudfunctions.net/api';
+  const FRONTEND_VERSION = 'v26-firebase (2026-09-05)';
   document.addEventListener('DOMContentLoaded', function () {
     const versionEl = document.getElementById('version-display');
     if (versionEl) versionEl.textContent = FRONTEND_VERSION;
@@ -1020,8 +1019,16 @@
     }
   });
 
+  let lastViolationAt = 0;
   function registerViolation() {
     if (hasSubmitted) return;
+
+    // visibilitychange 與 blur 可能在同一次離開視窗時連續觸發；
+    // 1 秒內只計算一次，避免第一次切換就被誤判為第二次。
+    const now = Date.now();
+    if (now - lastViolationAt < 1000) return;
+    lastViolationAt = now;
+
     violationCount++;
     document.getElementById('violation-display').textContent = '違規 ' + violationCount + ' 次';
 
@@ -1141,7 +1148,7 @@
     btnExam.textContent = '確認中…';
     noteEl.classList.add('hidden');
 
-    callAPI('getExamConfig', { studentId: studentInfo.studentId }).then(function (config) {
+    callAPI('getExamConfig', { studentId: studentInfo.studentId, password: studentInfo.password }).then(function (config) {
       if (!config || !config.title) {
         document.getElementById('choice-unit-date').textContent = '';
         btnExam.disabled = true;
@@ -1385,7 +1392,7 @@
 
   function loadQuestionsAndStart() {
     document.getElementById('questions-container').innerHTML = '<p class="loading-text">題目載入中，請稍候…</p>';
-    callAPI('getQuestions', { studentId: studentInfo.studentId }).then(function (result) {
+    callAPI('getQuestions', { studentId: studentInfo.studentId, password: studentInfo.password }).then(function (result) {
       if (Array.isArray(result)) {
         QUESTIONS = result;
         startExam();
@@ -1742,6 +1749,7 @@
 
     const payload = {
       studentId: studentInfo.studentId,
+      password: studentInfo.password,
       studentName: studentInfo.studentName,
       department: studentInfo.department,
       answers: answers,
@@ -1763,73 +1771,16 @@
     if (!result.success) {
       document.getElementById('result-score-block').innerHTML =
         '<p style="color:var(--danger);">提交時發生錯誤：' + escapeHtml(result.error) + '</p>';
+      document.getElementById('result-details-container').innerHTML = '';
       return;
     }
 
-    const commentClass = (result.trend === 'down') ? 'comment-box down' : 'comment-box';
-    const commentHtml = result.comment
-      ? '<div class="' + commentClass + '">' + escapeHtml(result.comment) + '</div>'
-      : '';
-
-    // 滿分給獎盃、不及格（<60%）給安慰圖示，其餘不特別顯示
-    let scoreIconHtml = '';
-    if (result.percent >= 100) {
-      scoreIconHtml = '<div class="score-icon-large">🏆</div><div class="label" style="color:var(--accent-dark); font-weight:700;">滿分！太厲害了！</div>';
-    } else if (result.percent < 60) {
-      scoreIconHtml = '<div class="score-icon-large">🤗</div><div class="label">沒關係，這只是學習路上的一站，再接再厲！</div>';
-    }
-
-    // 彩帶慶祝：高分（≥80%）或本次比上次進步時觸發
-    if (result.percent >= 80 || result.trend === 'up') {
-      launchConfetti();
-    }
-
-    // 不管有沒有開放詳解對照，成績摘要一律顯示
+    // 依需求：提交後只顯示得分，不顯示題目、選項、答案、解析或逐題結果。
     document.getElementById('result-score-block').innerHTML =
-      scoreIconHtml +
       '<div class="big-number">' + result.score + ' / ' + result.total + '</div>' +
-      '<div class="label">得分 ' + result.percent + '</div>' +
-      commentHtml;
+      '<div class="label">得分 ' + result.percent + '</div>';
 
-    const detailsContainer = document.getElementById('result-details-container');
-
-    if (result.showDetails) {
-      const statsById = {};
-      (result.questionStats || []).forEach(function (s) { statsById[s.id] = s; });
-
-      let html = '<div class="card"><h2>📘 詳解對照</h2>';
-      result.details.forEach(function (d, idx) {
-        const stat = statsById[d.id];
-        let statLine = '';
-        if (stat && stat.correctRate !== null) {
-          statLine =
-            '<div class="ans-row">📊 全班正確率：<b>' + stat.correctRate + '%</b>' +
-            '　難易度：<b>' + escapeHtml(stat.difficulty) + '</b>' +
-            '（共 ' + stat.attempts + ' 人作答）</div>';
-        }
-        const answerClass = d.isCorrect ? 'correct-answer-text' : 'wrong-answer-text';
-        const optionsHtml = renderOptionReview(d);
-        const questionImageHtml = renderImageHtml(d.imageUrl, 'question-image');
-        const explanationImageHtml = renderImageHtml(d.explanationImageUrl, 'explanation-image');
-        html +=
-          '<div class="detail-item ' + (d.isCorrect ? 'correct' : 'wrong') + '">' +
-          '<span class="tag">' + (d.isCorrect ? '✅ 答對' : '❌ 答錯') + '</span>' +
-          '<div style="font-weight:700; margin-bottom:6px;">第 ' + (idx + 1) + ' 題：' + escapeHtml(d.question) + '</div>' +
-          questionImageHtml +
-          '<div class="ans-row">您的答案：<b class="' + answerClass + '">' + escapeHtml(d.studentAnswer) + '</b>　' +
-          '正確答案：<b class="correct-answer-text">' + escapeHtml(d.correctAnswer) + '</b></div>' +
-          optionsHtml +
-          statLine +
-          '<div class="explain">💡 ' + escapeHtml(d.explanation) + '</div>' +
-          explanationImageHtml +
-          '</div>';
-      });
-      html += '</div>';
-      detailsContainer.innerHTML = html;
-    } else {
-      // 依需求：交卷後不呈現詳解對照，只顯示成績（上面已經顯示了）
-      detailsContainer.innerHTML = '';
-    }
+    document.getElementById('result-details-container').innerHTML = '';
   }
 
 
