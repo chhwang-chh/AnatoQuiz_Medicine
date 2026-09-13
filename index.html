@@ -1739,41 +1739,119 @@
     doSubmit(true);
   }
 
-  function doSubmit(forced) {
-    if (hasSubmitted) return;
-    hasSubmitted = true;
-    examInProgress = false;
-    clearInterval(timerInterval);
+function doSubmit(forced) {
+  if (hasSubmitted) return;
 
-    const timeUsedSeconds = Math.round((Date.now() - examStartTime) / 1000);
+  hasSubmitted = true;
+  examInProgress = false;
+  clearInterval(timerInterval);
 
-    const payload = {
-      studentId: studentInfo.studentId,
-      password: studentInfo.password,
-      studentName: studentInfo.studentName,
-      department: studentInfo.department,
-      answers: answers,
-      answerTimestamps: answerTimestamps,
-      questionIds: QUESTIONS.map(function (q) { return q.id; }),
-      violationCount: violationCount,
-      timeUsedSeconds: timeUsedSeconds,
-      forcedSubmit: forced
-    };
+  const timeUsedSeconds = Math.round((Date.now() - examStartTime) / 1000);
 
-    callAPI('submitExam', payload).then(onSubmitSuccess);
+  const payload = {
+    studentId: studentInfo.studentId,
+    password: studentInfo.password,
+    studentName: studentInfo.studentName,
+    department: studentInfo.department,
+    answers: answers,
+    answerTimestamps: answerTimestamps,
+    questionIds: QUESTIONS.map(function (q) { return q.id; }),
+    violationCount: violationCount,
+    timeUsedSeconds: timeUsedSeconds,
+    forcedSubmit: forced
+  };
+
+  let attempt = 0;
+  const maxAttempts = 3;
+
+  function trySubmit() {
+    attempt++;
+
+    callAPI('submitExam', payload).then(function (result) {
+
+      const errorText = String(
+        result && result.error ? result.error : ''
+      );
+
+      const isNetworkError =
+        errorText.includes('連線逾時') ||
+        errorText.includes('無法連線') ||
+        errorText.includes('伺服器暫時沒有正確回應') ||
+        errorText.includes('Failed to fetch') ||
+        errorText.includes('NetworkError');
+
+      if (
+        result &&
+        result.success === false &&
+        isNetworkError &&
+        attempt < maxAttempts
+      ) {
+        setTimeout(trySubmit, attempt * 1500);
+        return;
+      }
+
+      // 三次仍因網路問題失敗時，解除前端送出鎖定，
+      // 讓學生可以再次按「重新送出」
+      if (
+        result &&
+        result.success === false &&
+        isNetworkError
+      ) {
+        hasSubmitted = false;
+      }
+
+      onSubmitSuccess(result, forced);
+    });
   }
 
-  function onSubmitSuccess(result) {
+  trySubmit();
+}
+
+  function onSubmitSuccess(result, forced) {
     document.getElementById('screen-exam').classList.add('hidden');
     document.getElementById('locked-screen').classList.add('hidden');
     document.getElementById('screen-result').classList.remove('hidden');
 
-    if (!result.success) {
-      document.getElementById('result-score-block').innerHTML =
-        '<p style="color:var(--danger);">提交時發生錯誤：' + escapeHtml(result.error) + '</p>';
-      document.getElementById('result-details-container').innerHTML = '';
-      return;
+if (!result.success) {
+  const errorText = String(result.error || '');
+
+  const isNetworkError =
+    errorText.includes('連線逾時') ||
+    errorText.includes('無法連線') ||
+    errorText.includes('伺服器暫時沒有正確回應') ||
+    errorText.includes('Failed to fetch') ||
+    errorText.includes('NetworkError');
+
+  let retryHtml = '';
+
+  if (isNetworkError) {
+    retryHtml =
+      '<p style="margin-top:12px;">網路連線可能暫時不穩定，您的答案仍保留在目前畫面中。</p>' +
+      '<button id="btn-retry-submit" type="button" style="margin-top:16px;">重新送出答案</button>';
+  }
+
+  document.getElementById('result-score-block').innerHTML =
+    '<p style="color:var(--danger);">提交時發生錯誤：' +
+    escapeHtml(errorText) +
+    '</p>' +
+    retryHtml;
+
+  document.getElementById('result-details-container').innerHTML = '';
+
+  if (isNetworkError) {
+    const retryBtn = document.getElementById('btn-retry-submit');
+
+    if (retryBtn) {
+      retryBtn.addEventListener('click', function () {
+        retryBtn.disabled = true;
+        retryBtn.textContent = '重新送出中…';
+        doSubmit(!!forced);
+      });
     }
+  }
+
+  return;
+}
 
     // 依需求：提交後只顯示得分，不顯示題目、選項、答案、解析或逐題結果。
     document.getElementById('result-score-block').innerHTML =
